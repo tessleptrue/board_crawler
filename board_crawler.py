@@ -6,319 +6,197 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from datetime import datetime
 import logging
-from typing import List, Dict, Optional, Type
-import re
+from typing import List, Dict, Optional, Set
 
-class BaseBoardParser:
-    """Base class for all board parsers"""
-    
-    def parse(self, soup: BeautifulSoup, url: str) -> List[Dict]:
-        """Parse the board content and return list of records."""
-        raise NotImplementedError("Each parser must implement parse() method")
-    
-    def can_handle_url(self, url: str) -> bool:
-        """Check if this parser can handle the given URL."""
-        raise NotImplementedError("Each parser must implement can_handle_url() method")
-
-class GettyBoardParser(BaseBoardParser):
+class GettyBoardParser:
     """Parser for Getty Images board pages"""
     
-    def can_handle_url(self, url: str) -> bool:
-        return "gettyimages.com/collaboration/boards" in url
-    
-    def parse(self, soup: BeautifulSoup, url: str) -> List[Dict]:
-        records = []
-        
-        # Find the board data which is stored in a JavaScript variable
-        scripts = soup.find_all('script')
-        board_data = None
-        
-        # Debug logging to see what we're getting
-        logging.debug(f"Found {len(scripts)} script tags")
-        
-        for script in scripts:
-            if script.string and "collaboration.initialBoard" in script.string:
-                try:
-                    # Debug logging
-                    logging.debug("Found collaboration.initialBoard script")
-                    
-                    # Extract the JSON data using a more robust regex pattern
-                    pattern = r'collaboration\.initialBoard = JSON\.parse\(\'(.*?)\'\);'
-                    match = re.search(pattern, script.string, re.DOTALL)
-                    
-                    if match:
-                        json_str = match.group(1)
-                        # Unescape the JSON string
-                        json_str = json_str.encode('utf-8').decode('unicode_escape')
-                        try:
-                            board_data = json.loads(json_str)
-                            logging.debug("Successfully parsed board JSON data")
-                            break
-                        except json.JSONDecodeError as e:
-                            logging.error(f"JSON parsing error: {str(e)}")
-                            logging.debug(f"Failed to parse JSON: {json_str[:500]}...")
-                except Exception as e:
-                    logging.error(f"Error processing script tag: {str(e)}")
-                    continue
-        
-        if not board_data:
-            logging.error("Could not find or parse board data")
-            return []
+    def __init__(self):
+        self.session = requests.Session()
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'sec-ch-ua-platform': '"macOS"'
+        }
 
-        if not isinstance(board_data, dict):
-            logging.error(f"Unexpected board_data type: {type(board_data)}")
-            return []
+    def _fetch_asset_list(self, board_id: str) -> List[Dict]:
+        """Fetch the list of assets from the board"""
+        url = f"https://www.gettyimages.com/collaboration/boards/{board_id}/asset_list"
+        response = self.session.get(url, headers=self.headers)
+        response.raise_for_status()
+        data = response.json()
+        return data.get('assets', [])
+
+    def _fetch_asset_metadata(self, asset_ids: List[str]) -> List[Dict]:
+        """Fetch detailed metadata for assets"""
+        # Join asset IDs with commas
+        ids_param = ','.join(asset_ids)
+        url = "https://www.gettyimages.com/collaboration/board_assets.json"
+        params = {
+            'asset_ids': ids_param
+        }
         
-        if board_data:
-            # Extract board metadata
-            board_name = board_data.get('name', '')
-            board_description = board_data.get('description', '')
-            created_date = board_data.get('created_date', '')
-            last_updated_date = board_data.get('last_updated_date', '')
-            platform = "Getty Images"
+        response = self.session.get(url, headers=self.headers, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def parse(self, board_url: str) -> List[Dict]:
+        """Parse a Getty Images board and return asset data"""
+        # Extract board ID from URL
+        board_id = board_url.split('/')[-1]
+        
+        try:
+            # First get the asset list
+            assets = self._fetch_asset_list(board_id)
+            if not assets:
+                logging.warning(f"No assets found in board {board_id}")
+                return []
             
-            # Find all asset containers in the HTML
-            asset_containers = soup.find_all('div', class_='board-item')
+            # Extract asset IDs
+            asset_ids = [asset['uri'].replace('gi:', '') for asset in assets]
             
-            # Extract assets information and combine with HTML metadata
-            assets = board_data.get('assets', [])
-            for asset, container in zip(assets, asset_containers):
-                record = self._extract_asset_data(
-                    asset, container, board_name, board_description,
-                    created_date, last_updated_date, platform, url
-                )
-                records.append(record)
+            # Create lookup for asset list data
+            asset_list_lookup = {asset['uri'].replace('gi:', ''): asset for asset in assets}
+            
+            # Fetch detailed metadata for all assets
+            metadata = self._fetch_asset_metadata(asset_ids)
+            
+            # Combine asset list data with metadata
+            records = []
+            for asset_data in metadata:
+                asset_id = asset_data['id']
+                asset_list_data = asset_list_lookup.get(asset_id, {})
                 
-        return records
-    
-    def _extract_asset_data(self, asset: Dict, container: BeautifulSoup,
-                          board_name: str, board_description: str,
-                          created_date: str, last_updated_date: str,
-                          platform: str, url: str) -> Dict:
-        """Extract data for a single asset"""
-        record = {
-            'platform': platform,
-            'board_name': board_name,
-            'board_description': board_description,
-            'board_created_date': created_date,
-            'board_last_updated': last_updated_date,
-            'asset_id': asset.get('uri', '').replace('gi:', ''),
-            'added_by_id': asset.get('added_by_id', ''),
-            'added_date': asset.get('added_date', ''),
-            'comments': len(asset.get('comments', [])),
-            'source_url': url
-        }
-        
-        if container:
-            # Extract additional metadata from HTML
-            record.update(self._extract_html_metadata(container))
-        
-        return record
-    
-    def _extract_html_metadata(self, container: BeautifulSoup) -> Dict:
-        """Extract metadata from HTML container"""
-        metadata = {}
-        
-        elements = {
-            'asset_family': ('span', {'class_': 'asset-family'}),
-            'license_type': ('span', {'class_': 'license-type'}),
-            'title': ('span', {'class_': 'title'}),
-            'date_created': ('span', {'class_': 'date-created'}),
-            'collection': ('span', {'class_': 'collection'})
-        }
-        
-        for key, (tag, attrs) in elements.items():
-            elem = container.find(tag, **attrs)
-            if elem:
-                metadata[key] = elem.text.strip()
-        
-        # Extract credit/artist information
-        artist_elem = container.find('span', class_='artist')
-        if artist_elem:
-            metadata['credit'] = artist_elem.text.replace('Credit:', '').strip()
-        
-        # Determine if asset is video
-        metadata['is_video'] = bool(container.find('a', class_='play'))
-        
-        # Extract preview URLs
-        img_elem = container.find('img', class_='board-asset')
-        if img_elem:
-            metadata['preview_url'] = img_elem.get('src', '')
+                record = {
+                    'board_id': board_id,
+                    'asset_id': asset_id,
+                    'added_by_id': asset_list_data.get('added_by_id', ''),
+                    'added_date': asset_list_data.get('added_date', ''),
+                    'title': asset_data.get('title', ''),
+                    'caption': asset_data.get('caption', ''),
+                    'date_created': asset_data.get('date_created', ''),
+                    'date_submitted': asset_data.get('date_submitted', ''),
+                    'artist': asset_data.get('artist', ''),
+                    'collection_name': asset_data.get('collection', {}).get('name', ''),
+                    'asset_family': asset_data.get('asset_family', ''),
+                    'asset_type': asset_data.get('asset_type', ''),
+                    'license_type': asset_data.get('license_type', ''),
+                    'is_video': asset_data.get('is_video', False),
+                    'release_info': asset_data.get('release', {}).get('text', ''),
+                    'preview_url': asset_data.get('delivery_urls', {}).get('comp', ''),
+                    'source_url': board_url
+                }
+                records.append(record)
             
-        video_preview = container.find('div', attrs={'gi-video-on-hover': True})
-        if video_preview:
-            metadata['video_preview_url'] = video_preview.get('gi-video-on-hover', '')
+            logging.info(f"Found {len(records)} assets in board {board_id}")
+            return records
             
-        return metadata
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching data for board {board_id}: {str(e)}")
+            return []
+        except Exception as e:
+            logging.error(f"Error processing board {board_id}: {str(e)}")
+            return []
 
 class WebCrawler:
-    """Main crawler class that orchestrates the parsing process"""
-    
-    def __init__(self, urls: List[str], output_file: str = "board_data.csv",
-                 existing_records_file: Optional[str] = None):
+    def __init__(self, output_file: str = "board_data.csv"):
         """Initialize the web crawler."""
-        self.urls = urls
-        self.output_file = output_file
-        self.existing_records = set()
-        
-        # Initialize parsers
-        self.parsers = [GettyBoardParser()]
-        
-        # Set up logging
+        # Set up logging first
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
-        self.logger = logging.getLogger(__name__)
         
-        # Load existing records if provided
-        if existing_records_file and os.path.exists(existing_records_file):
-            self._load_existing_records(existing_records_file)
+        self.output_file = output_file
+        self.existing_records = set()
+        self.parser = GettyBoardParser()
+        
+        # Load existing records (will handle errors gracefully)
+        self._load_existing_records()
 
-    def _load_existing_records(self, filename: str):
+    def _load_existing_records(self):
         """Load existing records to avoid duplicates."""
         try:
-            with open(filename, 'r', newline='', encoding='utf-8') as csvfile:
+            with open(self.output_file, 'r', newline='', encoding='utf-8') as csvfile:
                 reader = csv.DictReader(csvfile)
+                
+                # Check if we have the required columns
+                if 'board_id' not in reader.fieldnames or 'asset_id' not in reader.fieldnames:
+                    logging.warning("Existing CSV has different schema - creating new file")
+                    # Rename the old file
+                    os.rename(self.output_file, f"{self.output_file}.old")
+                    return
+                
                 for row in reader:
-                    record_id = f"{row.get('platform', '')}_{row.get('asset_id', '')}_{row.get('board_name', '')}"
+                    # Create a unique identifier for each record
+                    record_id = f"{row['board_id']}_{row['asset_id']}"
                     self.existing_records.add(record_id)
-            self.logger.info(f"Loaded {len(self.existing_records)} existing records")
+                logging.info(f"Loaded {len(self.existing_records)} existing records")
+        except FileNotFoundError:
+            logging.info("No existing records file found - will create new one")
         except Exception as e:
-            self.logger.error(f"Error loading existing records: {str(e)}")
-            raise
-
-    def _fetch_page(self, url: str) -> str:
-        """Fetch the HTML content of a page."""
-        try:
-            # Custom headers including common required ones and Mac Chrome user agent
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.gettyimages.com/',
-                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"macOS"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'same-origin',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1'
-            }
-            
-            # Create a session to handle cookies
-            session = requests.Session()
-            response = session.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            # Debug log to see what we got
-            logging.debug(f"Response status code: {response.status_code}")
-            logging.debug(f"Response headers: {dict(response.headers)}")
-            logging.debug(f"First 1000 characters of response: {response.text[:1000]}")
-            
-            if 'Sign In - Getty Images' in response.text:
-                raise Exception("Authentication required. Please make sure you're signed in to Getty Images and the board is accessible.")
-
-            return response.text
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Error fetching {url}: {str(e)}")
-            raise
-
-    def _find_parser(self, url: str) -> Optional[BaseBoardParser]:
-        """Find appropriate parser for the given URL"""
-        for parser in self.parsers:
-            if parser.can_handle_url(url):
-                return parser
-        return None
-
-    def _parse_html(self, html: str, url: str) -> List[Dict]:
-        """Parse HTML content using appropriate parser."""
-        soup = BeautifulSoup(html, 'html.parser')
-        parser = self._find_parser(url)
-        
-        if not parser:
-            self.logger.warning(f"No parser found for URL: {url}")
-            return []
-        
-        try:
-            records = parser.parse(soup, url)
-            return records
-        except Exception as e:
-            self.logger.error(f"Error parsing HTML from {url}: {str(e)}")
-            return []
+            logging.error(f"Error loading existing records: {str(e)}")
+            # Rename problematic file instead of failing
+            if os.path.exists(self.output_file):
+                os.rename(self.output_file, f"{self.output_file}.error")
+            logging.info("Renamed problematic file and will start fresh")
 
     def _save_records(self, records: List[Dict]):
         """Save new records to CSV file."""
         if not records:
-            self.logger.info("No new records to save")
+            logging.info("No new records to save")
             return
 
         try:
-            file_exists = os.path.exists(self.output_file)
             new_records = []
-            
-            # Filter out existing records
             for record in records:
-                record_id = f"{record.get('platform', '')}_{record.get('asset_id', '')}_{record.get('board_name', '')}"
+                record_id = f"{record['board_id']}_{record['asset_id']}"
                 if record_id not in self.existing_records:
                     new_records.append(record)
                     self.existing_records.add(record_id)
 
             if not new_records:
-                self.logger.info("No new unique records found")
+                logging.info("No new unique records found")
                 return
 
+            # If file doesn't exist, create it with headers
+            file_exists = os.path.exists(self.output_file)
             mode = 'a' if file_exists else 'w'
+            
             with open(self.output_file, mode, newline='', encoding='utf-8') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=new_records[0].keys())
                 if not file_exists:
                     writer.writeheader()
                 writer.writerows(new_records)
                 
-            self.logger.info(f"Saved {len(new_records)} new records")
+            logging.info(f"Saved {len(new_records)} new records")
         except Exception as e:
-            self.logger.error(f"Error saving records: {str(e)}")
+            logging.error(f"Error saving records: {str(e)}")
             raise
 
-    def crawl(self):
-        """Execute the web crawling process."""
-        all_records = []
-        for url in self.urls:
+    def crawl_boards(self, urls: List[str]):
+        """Crawl multiple board URLs."""
+        for url in urls:
             try:
-                self.logger.info(f"Crawling {url}")
-                html = self._fetch_page(url)
-                records = self._parse_html(html, url)
-                all_records.extend(records)
-                self.logger.info(f"Found {len(records)} records from {url}")
+                logging.info(f"Crawling board: {url}")
+                records = self.parser.parse(url)
+                self._save_records(records)
             except Exception as e:
-                self.logger.error(f"Failed to crawl {url}: {str(e)}")
+                logging.error(f"Failed to crawl {url}: {str(e)}")
                 continue
 
-        if all_records:
-            self._save_records(all_records)
-            self.logger.info("Crawl completed successfully")
-        else:
-            self.logger.warning("No records found from any URL")
-
 def main():
-    # Set up logging with debug level when needed
-    logging.basicConfig(
-        level=logging.DEBUG,  # Changed from INFO to DEBUG
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-
     # List of board URLs to crawl
     urls = [
         "https://www.gettyimages.com/collaboration/boards/IihIOXzjIke8Mc_He0lTMw",
         # Add more Getty Images board URLs here
     ]
     
-    logging.info("Starting crawler...")
-    
     # Initialize and run crawler
-    crawler = WebCrawler(urls=urls)
-    crawler.crawl()
+    crawler = WebCrawler(output_file="board_data.csv")
+    crawler.crawl_boards(urls)
 
 if __name__ == "__main__":
     main()
