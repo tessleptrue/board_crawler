@@ -1,69 +1,79 @@
 import os
 import json
 import csv
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+import subprocess
 from datetime import datetime
 import logging
-from typing import List, Dict, Optional, Set
+from typing import List, Dict
 
 class GettyBoardParser:
-    """Parser for Getty Images board pages"""
-    
     def __init__(self):
-        self.session = requests.Session()
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'sec-ch-ua-platform': '"macOS"'
-        }
+        # Verify curl is available
+        try:
+            subprocess.run(['curl', '--version'], capture_output=True)
+        except FileNotFoundError:
+            raise RuntimeError("curl is not installed or not available in PATH")
 
-    def _fetch_asset_list(self, board_id: str) -> List[Dict]:
-        """Fetch the list of assets from the board"""
+    def _fetch_assets(self, board_id: str) -> List[Dict]:
+        """Fetch the list of assets from the board using curl"""
         url = f"https://www.gettyimages.com/collaboration/boards/{board_id}/asset_list"
-        response = self.session.get(url, headers=self.headers)
-        response.raise_for_status()
-        data = response.json()
-        return data.get('assets', [])
-
-    def _fetch_asset_metadata(self, asset_ids: List[str]) -> List[Dict]:
-        """Fetch detailed metadata for assets"""
-        # Join asset IDs with commas
-        ids_param = ','.join(asset_ids)
-        url = "https://www.gettyimages.com/collaboration/board_assets.json"
-        params = {
-            'asset_ids': ids_param
-        }
+        logging.info(f"Fetching assets URL: {url}")
         
-        response = self.session.get(url, headers=self.headers, params=params)
-        response.raise_for_status()
-        return response.json()
+        try:
+            # Run curl command and capture output
+            result = subprocess.run(['curl', url], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise Exception(f"curl failed with return code {result.returncode}: {result.stderr}")
+            
+            return json.loads(result.stdout).get('assets', [])
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse JSON from curl output: {str(e)}")
+            logging.error(f"Curl output: {result.stdout[:1000]}")  # First 1000 chars
+            raise
+        except Exception as e:
+            logging.error(f"Curl command failed: {str(e)}")
+            raise
+
+    def _fetch_metadata(self, asset_ids: List[str]) -> List[Dict]:
+        """Fetch detailed metadata for assets using curl"""
+        url = "https://www.gettyimages.com/collaboration/board_assets.json"
+        asset_ids_param = ','.join(asset_ids)
+        full_url = f"{url}?asset_ids={asset_ids_param}"
+        logging.info(f"Fetching metadata URL: {full_url}")
+        
+        try:
+            result = subprocess.run(['curl', full_url], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise Exception(f"curl failed with return code {result.returncode}: {result.stderr}")
+            
+            return json.loads(result.stdout)
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse JSON from curl output: {str(e)}")
+            logging.error(f"Curl output: {result.stdout[:1000]}")
+            raise
+        except Exception as e:
+            logging.error(f"Curl command failed: {str(e)}")
+            raise
 
     def parse(self, board_url: str) -> List[Dict]:
-        """Parse a Getty Images board and return asset data"""
-        # Extract board ID from URL
         board_id = board_url.split('/')[-1]
         
         try:
-            # First get the asset list
-            assets = self._fetch_asset_list(board_id)
+            logging.info(f"Fetching assets for board ID: {board_id}")
+            assets = self._fetch_assets(board_id)
+            
             if not assets:
-                logging.warning(f"No assets found in board {board_id}")
+                logging.info("No assets found in response")
                 return []
             
-            # Extract asset IDs
             asset_ids = [asset['uri'].replace('gi:', '') for asset in assets]
-            
-            # Create lookup for asset list data
             asset_list_lookup = {asset['uri'].replace('gi:', ''): asset for asset in assets}
+            metadata = self._fetch_metadata(asset_ids)
             
-            # Fetch detailed metadata for all assets
-            metadata = self._fetch_asset_metadata(asset_ids)
-            
-            # Combine asset list data with metadata
             records = []
             for asset_data in metadata:
                 asset_id = asset_data['id']
@@ -90,68 +100,67 @@ class GettyBoardParser:
                 }
                 records.append(record)
             
-            logging.info(f"Found {len(records)} assets in board {board_id}")
             return records
             
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error fetching data for board {board_id}: {str(e)}")
-            return []
         except Exception as e:
             logging.error(f"Error processing board {board_id}: {str(e)}")
-            return []
+            raise
 
 class WebCrawler:
-    def __init__(self, output_file: str = "board_data.csv"):
-        """Initialize the web crawler."""
-        # Set up logging first
+    def __init__(self, output_file: str = "board_data.csv", exclude_columns: List[str] = None):
+        """
+        Initialize the web crawler.
+        
+        Args:
+            output_file (str): Path to the CSV output file
+            exclude_columns (List[str]): List of column names to exclude from the output
+        """
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
-        
         self.output_file = output_file
+        self.exclude_columns = exclude_columns or []
         self.existing_records = set()
         self.parser = GettyBoardParser()
-        
-        # Load existing records (will handle errors gracefully)
         self._load_existing_records()
+        
+        # Log excluded columns
+        if self.exclude_columns:
+            logging.info(f"The following columns will be excluded: {', '.join(self.exclude_columns)}")
+
+    def _filter_record(self, record: Dict) -> Dict:
+        """Remove excluded columns from a record."""
+        return {k: v for k, v in record.items() if k not in self.exclude_columns}
 
     def _load_existing_records(self):
-        """Load existing records to avoid duplicates."""
         try:
-            with open(self.output_file, 'r', newline='', encoding='utf-8') as csvfile:
-                reader = csv.DictReader(csvfile)
-                
-                # Check if we have the required columns
-                if 'board_id' not in reader.fieldnames or 'asset_id' not in reader.fieldnames:
-                    logging.warning("Existing CSV has different schema - creating new file")
-                    # Rename the old file
-                    os.rename(self.output_file, f"{self.output_file}.old")
-                    return
-                
-                for row in reader:
-                    # Create a unique identifier for each record
-                    record_id = f"{row['board_id']}_{row['asset_id']}"
-                    self.existing_records.add(record_id)
-                logging.info(f"Loaded {len(self.existing_records)} existing records")
-        except FileNotFoundError:
-            logging.info("No existing records file found - will create new one")
+            if os.path.exists(self.output_file):
+                with open(self.output_file, 'r', newline='', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        record_id = f"{row['board_id']}_{row['asset_id']}"
+                        self.existing_records.add(record_id)
+                    logging.info(f"Loaded {len(self.existing_records)} existing records")
+            else:
+                logging.info("No existing records file found - will create new one")
         except Exception as e:
             logging.error(f"Error loading existing records: {str(e)}")
-            # Rename problematic file instead of failing
             if os.path.exists(self.output_file):
                 os.rename(self.output_file, f"{self.output_file}.error")
             logging.info("Renamed problematic file and will start fresh")
 
     def _save_records(self, records: List[Dict]):
-        """Save new records to CSV file."""
         if not records:
             logging.info("No new records to save")
             return
 
         try:
+            # Filter excluded columns from records
+            filtered_records = [self._filter_record(record) for record in records]
+            
             new_records = []
-            for record in records:
+            for record in filtered_records:
                 record_id = f"{record['board_id']}_{record['asset_id']}"
                 if record_id not in self.existing_records:
                     new_records.append(record)
@@ -161,7 +170,6 @@ class WebCrawler:
                 logging.info("No new unique records found")
                 return
 
-            # If file doesn't exist, create it with headers
             file_exists = os.path.exists(self.output_file)
             mode = 'a' if file_exists else 'w'
             
@@ -177,26 +185,34 @@ class WebCrawler:
             raise
 
     def crawl_boards(self, urls: List[str]):
-        """Crawl multiple board URLs."""
         for url in urls:
             try:
-                logging.info(f"Crawling board: {url}")
+                logging.info(f"Processing board: {url}")
                 records = self.parser.parse(url)
                 self._save_records(records)
+                logging.info(f"Successfully processed {len(records)} records")
             except Exception as e:
-                logging.error(f"Failed to crawl {url}: {str(e)}")
-                continue
+                logging.error(f"Failed to process {url}: {str(e)}")
 
 def main():
-    # List of board URLs to crawl
-    urls = [
-        "https://www.gettyimages.com/collaboration/boards/IihIOXzjIke8Mc_He0lTMw",
-        # Add more Getty Images board URLs here
+    # Example: exclude certain columns
+    exclude_columns = [
+        'release_info',       # Hide release information
+        'added_by_id',        # Hide user IDs
+        'license_type',       # Hide license information 
+        'source_url'        # Hide source URLs
     ]
     
-    # Initialize and run crawler
-    crawler = WebCrawler(output_file="board_data.csv")
+    urls = [
+        "https://www.gettyimages.com/collaboration/boards/IihIOXzjIke8Mc_He0lTMw",
+    ]
+    
+    crawler = WebCrawler(
+        output_file="board_data.csv",
+        exclude_columns=exclude_columns
+    )
     crawler.crawl_boards(urls)
 
 if __name__ == "__main__":
     main()
+
