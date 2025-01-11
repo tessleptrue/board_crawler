@@ -38,30 +38,31 @@ class GettyBoardParser(BaseBoardParser):
         
         for script in scripts:
             if script.string and "collaboration.initialBoard" in script.string:
-                # Extract the JSON data
                 try:
                     # Debug logging
                     logging.debug("Found collaboration.initialBoard script")
-                    logging.debug(f"Script content: {script.string[:500]}...")  # First 500 chars
                     
-                    match = re.search(r'collaboration\.initialBoard = JSON\.parse\((.*?)\);', script.string)
+                    # Extract the JSON data using a more robust regex pattern
+                    pattern = r'collaboration\.initialBoard = JSON\.parse\(\'(.*?)\'\);'
+                    match = re.search(pattern, script.string, re.DOTALL)
+                    
                     if match:
+                        json_str = match.group(1)
+                        # Unescape the JSON string
+                        json_str = json_str.encode('utf-8').decode('unicode_escape')
                         try:
-                            board_json = json.loads(json.loads(match.group(1)))
-                            board_data = board_json
+                            board_data = json.loads(json_str)
                             logging.debug("Successfully parsed board JSON data")
                             break
                         except json.JSONDecodeError as e:
                             logging.error(f"JSON parsing error: {str(e)}")
-                            logging.debug(f"Failed to parse JSON: {match.group(1)[:500]}...")
+                            logging.debug(f"Failed to parse JSON: {json_str[:500]}...")
                 except Exception as e:
                     logging.error(f"Error processing script tag: {str(e)}")
                     continue
         
         if not board_data:
             logging.error("Could not find or parse board data")
-            # Let's peek at the HTML to see what we got
-            logging.debug(f"Page content sample: {str(soup)[:1000]}...")
             return []
 
         if not isinstance(board_data, dict):
