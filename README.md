@@ -1,127 +1,121 @@
-# Board Crawler
+# Getty Board Parser - Installation and Usage Guide
 
-A Python tool for extracting content and metadata from Getty Images boards. The crawler fetches comprehensive information about each asset in a board, including creation dates, captions, licensing info, and other metadata.
+This guide will help you set up and run the Getty Board Parser on your Mac computer, even if you've never used command-line tools before.
 
-## What it does
+## Prerequisites
 
-The crawler:
-1. Takes a Getty Images board URL
-2. Fetches the list of assets in that board
-3. Gets detailed metadata for each asset
-4. Saves the information to a CSV file
-5. Only adds new assets when run multiple times
+Before you begin, make sure your Mac is running the latest version of macOS. You can check this by clicking on the Apple menu (🍎) in the top-left corner and selecting "About This Mac."
 
-## Data collected
+## Step 1: Install Required Software
 
-For each asset, the crawler captures:
-- Basic info (ID, title, caption)
-- Dates (created, submitted, added to board)
-- Source info (artist, collection)
-- Asset details (type, family, license type)
-- Technical info (video status, preview URLs)
-- Release information
-- Board context (board ID, source URL)
+1. **Install Homebrew**
+   - Open "Terminal" (you can find it using Spotlight Search - press Command+Space and type "Terminal")
+   - Copy and paste this command into Terminal:
+     ```
+     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+     ```
+   - Press Enter and follow any prompts
+   - When asked for your password, type it (note: you won't see characters as you type)
 
-## Setup
+2. **Install Python**
+   - In Terminal, type:
+     ```
+     brew install python
+     ```
+   - Press Enter and wait for the installation to complete
 
-1. Make sure you have Python 3.6 or newer installed
+3. **Install curl**
+   - In Terminal, type:
+     ```
+     brew install curl
+     ```
+   - Press Enter and wait for the installation to complete
 
-2. Set up a virtual environment:
+## Step 2: Set Up Your Project
 
-```bash
-# On macOS/Linux
-python3 -m venv venv
-source venv/bin/activate
+1. **Create a new folder for your project**
+   - Open Finder
+   - Click on "Documents" in the sidebar
+   - Right-click in the window and select "New Folder"
+   - Name it "GettyParser"
 
-# On Windows
-python -m venv venv
-venv\Scripts\activate
-```
+2. **Save the script**
+   - Create a new text file using TextEdit
+   - Go to TextEdit > Preferences and select "Plain Text"
+   - Copy the entire Python script
+   - Paste it into TextEdit
+   - Save the file as `getty_parser.py` in your GettyParser folder
+   - Make sure to remove the `.txt` extension if it's automatically added
 
-3. Install the required packages:
+## Step 3: Configure the Script
 
-```bash
-pip install requests beautifulsoup4
-```
+1. **Open the script**
+   - Right-click on `getty_parser.py`
+   - Select "Open With" > TextEdit
 
-## Usage
+2. **Modify the URLs**
+   - Find the `urls` section near the bottom of the file
+   - Replace the example URL with your Getty board URLs
+   - For example:
+     ```python
+     urls = [
+         "https://www.gettyimages.com/collaboration/boards/your-board-url-here",
+         "https://www.gettyimages.com/collaboration/boards/another-board-url"
+     ]
+     ```
 
-1. Download `board_crawler.py`
+## Step 4: Run the Script
 
-2. Edit the URLs list in the script:
-```python
-urls = [
-    "https://www.gettyimages.com/collaboration/boards/YOUR-BOARD-ID",
-    # Add more Getty Images board URLs here
-]
-```
+1. **Open Terminal**
+   - Press Command+Space
+   - Type "Terminal"
+   - Press Enter
 
-3. Run the script (make sure your virtualenv is activated):
-```bash
-python board_crawler.py
-```
+2. **Navigate to your project folder**
+   - Type:
+     ```
+     cd Documents/GettyParser
+     ```
+   - Press Enter
 
-The crawler will:
-- Create `board_data.csv` in the same directory
-- Show progress in the terminal
-- Skip any assets it has already processed
-- Handle errors gracefully
+3. **Run the script**
+   - Type:
+     ```
+     python3 getty_parser.py
+     ```
+   - Press Enter
 
-## Output Format
+## Output and Results
 
-The CSV file includes these columns:
-- `board_id`: Identifier for the Getty board
-- `asset_id`: Unique identifier for the asset
-- `title`: Asset title
-- `caption`: Full description of the asset
-- `date_created`: Original creation date
-- `date_submitted`: When added to Getty
-- `artist`: Creator/photographer
-- `collection_name`: Getty collection name
-- `asset_family`: Editorial/Creative
-- `asset_type`: Type of content
-- `license_type`: Licensing information
-- `is_video`: Whether it's a video
-- `release_info`: Usage rights information
-- `preview_url`: URL to preview image
-- Added info:
-  - `added_by_id`: User who added to board
-  - `added_date`: When added to board
-  - `source_url`: Original board URL
-
-## Incremental Updates
-
-The crawler is designed to be run multiple times on the same board(s). It will:
-1. Check for existing CSV file
-2. Load list of processed assets
-3. Only add new assets found
-4. Handle file format changes gracefully
+- The script will create a file called `board_data.csv` in your GettyParser folder
+- You can open this file with Numbers (Mac's spreadsheet app) or Microsoft Excel
+- The file will contain information about all the assets from your Getty boards
 
 ## Troubleshooting
 
-If you encounter issues:
-1. Check your internet connection
-2. Verify the board URLs are correct and accessible
-3. Ensure you have write permissions in the script's directory
-4. Check the console output for error messages
-5. Make sure your virtualenv is activated (you should see `(venv)` in your terminal prompt)
+If you encounter any errors:
 
-## Requirements
+1. **Check your internet connection**
+   - Make sure you're connected to the internet
+   - Try opening the Getty board URLs in your web browser
 
-- Python 3.6+
-- requests library
-- beautifulsoup4 library
+2. **Verify the URLs**
+   - Make sure the Getty board URLs are correct
+   - Ensure you have access to these boards
 
-## Limitations
+3. **Common Error Messages**
+   - "Permission denied": You might need to run the command with `sudo python3 getty_parser.py`
+   - "No such file or directory": Make sure you're in the correct folder in Terminal
 
-- Only works with Getty Images boards
-- Requires public board URLs
-- Rate limited by Getty's API
+## Need Help?
 
-## Deactivating the Virtual Environment
+If you're still having trouble:
+- Double-check that you've followed all steps exactly
+- Make sure all the URLs are correct and accessible
+- Try restarting your computer and running the script again
 
-When you're done, you can deactivate the virtual environment:
+## Notes
 
-```bash
-deactivate
-```
+- The script will automatically skip any duplicate entries
+- By default, it excludes certain private information like release info and user IDs
+- The CSV file can be opened in any spreadsheet program
