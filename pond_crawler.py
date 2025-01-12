@@ -6,6 +6,7 @@ import logging
 from typing import List, Dict
 import re
 from datetime import datetime
+from bs4 import BeautifulSoup  # Added BeautifulSoup for better HTML parsing
 
 class Pond5CollectionParser:
     def __init__(self):
@@ -23,20 +24,36 @@ class Pond5CollectionParser:
         try:
             # Run curl command with necessary headers
             headers = [
-                '-H', 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                '-H', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                 '-H', 'Accept-Language: en-US,en;q=0.9',
                 '-H', 'Accept-Encoding: gzip, deflate, br',
+                '-H', 'Cache-Control: max-age=0',
+                '-H', 'Upgrade-Insecure-Requests: 1',
+                '-H', 'Sec-Fetch-Site: none',
+                '-H', 'Sec-Fetch-Mode: navigate',
+                '-H', 'Sec-Fetch-User: ?1',
+                '-H', 'Sec-Fetch-Dest: document',
+                '-H', 'Connection: keep-alive',
                 '--compressed'
             ]
             
-            result = subprocess.run(['curl', '--verbose'] + headers + [url], capture_output=True, text=True)
+            # Run curl command with necessary headers and verbose output
+            curl_cmd = ['curl', '--verbose', '-L', '--cookie-jar', '/tmp/cookies.txt'] + headers + [url]
+            logging.info(f"Running curl command: {' '.join(curl_cmd)}")
+            
+            result = subprocess.run(curl_cmd, capture_output=True, text=True)
+            
+            # Log both stdout and stderr for debugging
+            logging.info(f"Curl stdout: {result.stdout}")
+            logging.info(f"Curl stderr: {result.stderr}")
             
             if result.returncode != 0:
                 raise Exception(f"curl failed with return code {result.returncode}: {result.stderr}")
             
-            # Log the first part of the response to debug
-            logging.debug(f"First 500 chars of response: {result.stdout[:500]}")
+            if not result.stdout.strip():
+                logging.error("Received empty response from server")
+                raise Exception("Empty response received from server")
             
             return self._parse_html_response(result.stdout)
             
@@ -49,52 +66,82 @@ class Pond5CollectionParser:
         collection_data = []
         
         try:
-            # Find all formats_data JSON strings
-            # First look for all SearchResultV3 items
-            search_results = re.findall(r'class="SearchResultV3[^>]*formats_data="([^"]*)"', html_content)
-            logging.info(f"Found {len(search_results)} items in collection")
+            logging.info(f"HTML content length: {len(html_content)}")
+            # Parse HTML using BeautifulSoup
+            soup = BeautifulSoup(html_content, 'html.parser')
             
-            if not search_results:
-                # Debug: Look for some recognizable parts
-                if 'SearchResultV3' in html_content:
-                    logging.debug("Found SearchResultV3 in content, but couldn't extract items")
-                if 'formats_data' in html_content:
-                    logging.debug("Found formats_data in content, but couldn't extract items")
-                
-                formats_data_matches = re.findall(r'formats_data="([^"]*)"', html_content)
-            else:
-                formats_data_matches = search_results
+            # Find all search result items
+            items = soup.find_all('div', class_='SearchResultsV3-item')
+            logging.info(f"Found {len(items)} items in collection")
             
-            logging.info(f"Extracted {len(formats_data_matches)} format data entries")
+            # Print first item's HTML for debugging
+            if items:
+                logging.info("First item HTML:")
+                logging.info(items[0].prettify())
             
-            for formats_data_str in formats_data_matches:
+            for item in items:
                 try:
-                    # Unescape the JSON string and parse it
-                    formats_data_str = formats_data_str.replace('&quot;', '"')
-                    item_data = json.loads(formats_data_str)
+                    # Find the video object data
+                    video_obj = item.find('div', {'itemtype': 'http://schema.org/VideoObject'})
+                    if not video_obj:
+                        continue
+                        
+                    # Extract metadata
+                    metadata = {}
+                    for meta in video_obj.find_all('meta', {'itemprop': True}):
+                        metadata[meta.get('itemprop')] = meta.get('content')
                     
-                    # Extract the video object data
-                    video_obj = item_data.get('videoObject', {})
+                    # Get formats data from the data attribute
+                    formats_data = {}
+                    formats_elem = item.find('a', {'formats_data': True})
+                    if formats_elem:
+                        try:
+                            formats_data = json.loads(formats_elem['formats_data'])
+                        except:
+                            logging.warning("Failed to parse formats_data JSON")
                     
-                    # Create record
+                    # Create record combining metadata and formats data
+                    # Get URL from the anchor tag - with detailed debugging
+                    anchor = item.find('a', {'class': ['SearchResultV3', 'js-searchResult', 'js-awProductLink']})
+                    logging.info(f"Found anchor tag: {anchor is not None}")
+                    if anchor:
+                        logging.info(f"Anchor attributes: {anchor.attrs}")
+                        url = anchor.get('href', '')
+                        logging.info(f"Extracted URL: {url}")
+                    else:
+                        url = ''
+                    
+                    # Try alternate selectors if no URL found
+                    if not url:
+                        logging.info("Trying alternate selector")
+                        # Try direct CSS selector
+                        anchor = item.select_one('a.SearchResultV3')
+                        if anchor:
+                            url = anchor.get('href', '')
+                            logging.info(f"Found URL with alternate selector: {url}")
+                            
+                    formats_data_elem = item.find('a', {'formats_data': True})
+                    if formats_data_elem:
+                        logging.info(f"formats_data element found: {formats_data_elem['formats_data'][:100]}")
+                    
                     record = {
-                        'item_id': item_data.get('id', ''),
-                        'title': item_data.get('title', ''),
-                        'description': video_obj.get('description', ''),
-                        'url': f"https://www.pond5.com/stock-footage/item/{item_data.get('id')}",
-                        'thumbnail_url': item_data.get('iurl', ''),
-                        'artist': item_data.get('artistname', ''),
-                        'duration_ms': item_data.get('durationms', ''),
-                        'variant': item_data.get('variant', ''),
-                        'price_range': item_data.get('prang', ''),
-                        'upload_date': video_obj.get('uploadDate', ''),
-                        'resolution': f"{item_data.get('x', '')}x{item_data.get('y', '')}",
-                        'category': item_data.get('cat', ''),
-                        'is_exclusive': item_data.get('isExclusive', False),
-                        'is_free': item_data.get('isFree', False),
-                        'min_price_usd': item_data.get('usd_lo', ''),
-                        'max_price_usd': item_data.get('usd_hi', ''),
-                        'content_url': video_obj.get('contentUrl', '')
+                        'item_id': formats_data.get('id', ''),
+                        'title': metadata.get('name', ''),
+                        'description': metadata.get('description', ''),
+                        'url': url,
+                        'thumbnail_url': metadata.get('thumbnailURL', ''),
+                        'artist': formats_data.get('artistname', ''),
+                        'duration_ms': formats_data.get('durationms', ''),
+                        'variant': formats_data.get('variant', ''),
+                        'price_range': formats_data.get('prang', ''),
+                        'upload_date': metadata.get('uploadDate', ''),
+                        'resolution': f"{formats_data.get('x', '')}x{formats_data.get('y', '')}",
+                        'category': formats_data.get('cat', ''),
+                        'is_exclusive': formats_data.get('isExclusive', False),
+                        'is_free': formats_data.get('isFree', False),
+                        'min_price_usd': formats_data.get('usd_lo', ''),
+                        'max_price_usd': formats_data.get('usd_hi', ''),
+                        'content_url': metadata.get('contentUrl', '')
                     }
                     collection_data.append(record)
                     
@@ -141,7 +188,7 @@ class WebCrawler:
             exclude_columns (List[str]): List of column names to exclude from the output
         """
         logging.basicConfig(
-            level=logging.DEBUG,  # Changed to DEBUG level for more verbose output
+            level=logging.INFO,  # Changed to INFO for less verbosity
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         self.output_file = output_file
