@@ -4,7 +4,7 @@ This guide will help you set up and run the Getty Board Parser on your Mac compu
 
 ## Prerequisites
 
-Before you begin, make sure your Mac is running the latest version of macOS. You can check this by clicking on the Apple menu (🍎) in the top-left corner and selecting "About This Mac."
+Before you begin, make sure your Mac is running the latest version of macOS. You can check this by clicking on the Apple menu in the top-left corner and selecting "About This Mac."
 
 ## Step 1: Install Required Software
 
