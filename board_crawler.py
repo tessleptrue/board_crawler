@@ -7,6 +7,37 @@ import logging
 from typing import List, Dict
 
 class GettyBoardParser:
+    """Parser for Getty Images board data.
+    
+    The output CSV contains columns from three different API endpoints:
+    
+    1. /boards/{board_id}/asset_list endpoint:
+        - added_by_id
+        - added_date
+    
+    2. /board_assets.json endpoint:
+        - title
+        - caption
+        - date_created
+        - date_submitted
+        - artist
+        - collection_name (from collection.name)
+        - asset_family
+        - asset_type
+        - license_type
+        - is_video
+        - release_info (from release.text)
+        - preview_url (from delivery_urls.comp)
+    
+    3. /carousel_items endpoint:
+        - detail_url (from href)
+        
+    Additional columns:
+        - board_id: Extracted from input URL
+        - asset_id: ID used across all endpoints
+        - source_url: Input URL
+    """
+    
     def __init__(self):
         # Verify curl is available
         try:
@@ -59,6 +90,32 @@ class GettyBoardParser:
             logging.error(f"Curl command failed: {str(e)}")
             raise
 
+    def _fetch_carousel_items(self, asset_ids: List[str]) -> Dict[str, str]:
+        """Fetch carousel items to get detail URLs"""
+        url = "https://www.gettyimages.com/collaboration/carousel_items"
+        asset_ids_param = ','.join(asset_ids)
+        full_url = f"{url}?include_missing=false&asset_ids={asset_ids_param}"
+        logging.info(f"Fetching carousel items URL: {full_url}")
+        
+        try:
+            result = subprocess.run(['curl', full_url], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise Exception(f"curl failed with return code {result.returncode}: {result.stderr}")
+            
+            carousel_data = json.loads(result.stdout)
+            # Create a mapping of asset_id to href
+            href_mapping = {item['id']: item.get('href', '') for item in carousel_data}
+            return href_mapping
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse JSON from carousel items: {str(e)}")
+            logging.error(f"Curl output: {result.stdout[:1000]}")
+            raise
+        except Exception as e:
+            logging.error(f"Curl command failed: {str(e)}")
+            raise
+
     def parse(self, board_url: str) -> List[Dict]:
         board_id = board_url.split('/')[-1]
         
@@ -73,6 +130,7 @@ class GettyBoardParser:
             asset_ids = [asset['uri'].replace('gi:', '') for asset in assets]
             asset_list_lookup = {asset['uri'].replace('gi:', ''): asset for asset in assets}
             metadata = self._fetch_metadata(asset_ids)
+            detail_urls = self._fetch_carousel_items(asset_ids)
             
             records = []
             for asset_data in metadata:
@@ -96,6 +154,7 @@ class GettyBoardParser:
                     'is_video': asset_data.get('is_video', False),
                     'release_info': asset_data.get('release', {}).get('text', ''),
                     'preview_url': asset_data.get('delivery_urls', {}).get('comp', ''),
+                    'detail_url': detail_urls.get(asset_id, ''),
                     'source_url': board_url
                 }
                 records.append(record)
@@ -215,4 +274,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
